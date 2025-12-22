@@ -23,13 +23,14 @@ from config_loader import load_config
 trading_stop_event = threading.Event()
 
 
-def run_trading_session(risk_profile='medium', starting_funds=1000.0, trading_duration_minutes=60, assets=None):
+def run_trading_session(risk_profile='medium', starting_funds=1000.0, trading_duration_minutes=60, assets=None, user_id=None):
     """
     Run a trading session with specified parameters
     :param risk_profile: low, medium, or high
     :param starting_funds: initial balance for the portfolio
     :param trading_duration_minutes: how long to run the trading simulation in minutes
     :param assets: optional list of assets to trade, if None will be selected based on risk profile
+    :param user_id: user ID for Supabase logging
     :return: final portfolio value
     """
     # Clear the log file to ensure fresh data for each run
@@ -114,7 +115,7 @@ def run_trading_session(risk_profile='medium', starting_funds=1000.0, trading_du
                 print(f"Result: {result}")
                 
                 # Log this trade to file for GUI with advanced analysis
-                log_trade(asset, decision, result, portfolio_value, advanced_decision, risk_profile)
+                log_trade(asset, decision, result, portfolio_value, advanced_decision, risk_profile, user_id)
                 
                 # Small delay to prevent API rate limiting in simulation
                 time.sleep(0.5)  # Reduced delay for faster execution
@@ -153,6 +154,7 @@ def stop_trading_session():
 
 def main():
     parser = argparse.ArgumentParser(description='AI Trading Agent with Simulation')
+    parser.add_argument('--user-id', required=True, help='User ID for logging trades to Supabase')
     parser.add_argument('--assets', nargs='+', default=None, help='Assets to trade (if not using risk profile)')
     parser.add_argument('--interval', default='1h', help='Trading interval')
     parser.add_argument('--starting-funds', type=float, default=1000.0, help='Starting simulated funds')
@@ -170,26 +172,35 @@ def main():
     
     args = parser.parse_args()
 
+    print(f"Starting trading session for user: {args.user_id}")
+
     # Call the new function with command line arguments
     final_value = run_trading_session(
         risk_profile=args.risk_profile,
         starting_funds=args.starting_funds,
         trading_duration_minutes=args.duration,
-        assets=args.assets
+        assets=args.assets,
+        user_id=args.user_id
     )
     
-    print("\nFinal portfolio value:", final_value)
+    print(f"\nFinal portfolio value for user {args.user_id}:", final_value)
 
 
-def log_trade(asset, decision, result, portfolio_value, advanced_decision=None, risk_profile=None):
-    """Log trade data for GUI visualization"""
+def log_trade(asset, decision, result, portfolio_value, advanced_decision=None, risk_profile=None, user_id=None):
+    """Log trade data for GUI visualization and Supabase"""
     log_entry = {
         "timestamp": datetime.now().isoformat(),
         "asset": asset,
-        "decision": decision,
-        "result": result,
+        "side": decision,  # Using 'side' for Supabase schema consistency
+        "pnl": result.get('pnl', 0) if isinstance(result, dict) else 0,
+        "price": result.get('price', 0) if isinstance(result, dict) else 0,
+        "size": result.get('size', 0) if isinstance(result, dict) else 0,
         "portfolio_value": portfolio_value
     }
+    
+    # Add user_id for Supabase
+    if user_id:
+        log_entry['user_id'] = user_id
     
     # Add risk profile information
     if risk_profile:
@@ -205,10 +216,20 @@ def log_trade(asset, decision, result, portfolio_value, advanced_decision=None, 
             'position_size': advanced_decision.get('position_size', 0)
         }
     
-    # Append to trades log file - only for the active session
-    # Use a configurable log file name with default fallback
+    # Log to Supabase if user_id is provided
+    if user_id:
+        try:
+            from services.supabase_client import SupabaseClient
+            db = SupabaseClient()
+            db.insert_trade(log_entry)
+            print(f"Trade logged to Supabase for user {user_id}")
+        except Exception as e:
+            print(f"Error logging to Supabase: {e}")
+    
+    # Also append to local trades log file as fallback
     import os
     log_file_name = os.environ.get('TRADES_LOG_FILE', 'trade_log/trades_log.jsonl')
+    os.makedirs(os.path.dirname(log_file_name), exist_ok=True)
     with open(log_file_name, 'a') as f:
         f.write(json.dumps(log_entry) + '\n')
 
